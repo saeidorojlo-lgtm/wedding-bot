@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ربات تلگرام عکاسی عروس - ثبت سفارش و نمایش پکیج‌ها
+ربات تلگرام عکاسی عروس - ثبت سفارش و نمایش پکیج‌ها (منوی مرحله‌ای)
 کتابخانه: python-telegram-bot (نسخه ۲۰ به بالا)
 """
 
@@ -16,7 +16,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import BOT_TOKEN, ADMIN_CHAT_ID, PACKAGES
+from config import BOT_TOKEN, ADMIN_CHAT_ID, CATEGORIES
 from database import init_db, save_order
 
 logging.basicConfig(
@@ -29,18 +29,53 @@ logger = logging.getLogger(__name__)
 ASK_NAME, ASK_PHONE, ASK_DATE, CONFIRM = range(4)
 
 
-def get_package_by_id(package_id):
-    for p in PACKAGES:
-        if p["id"] == package_id:
-            return p
-    return None
+# ---------- ساخت کیبوردهای مرحله‌ای ----------
 
-
-def packages_keyboard():
+def main_categories_keyboard():
     buttons = [
-        [InlineKeyboardButton(f"{p['title']} - {p['price']}", callback_data=f"pkg_{p['id']}")]
-        for p in PACKAGES
+        [InlineKeyboardButton(cat["title"], callback_data=f"cat|{key}")]
+        for key, cat in CATEGORIES.items()
     ]
+    return InlineKeyboardMarkup(buttons)
+
+
+def pro_products_keyboard():
+    products = CATEGORIES["pro"]["products"]
+    buttons = [
+        [InlineKeyboardButton(p["title"], callback_data=f"prod|{key}")]
+        for key, p in products.items()
+    ]
+    buttons.append([InlineKeyboardButton("⬅️ بازگشت", callback_data="back|main")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def pro_sizes_keyboard(product_key):
+    sizes = CATEGORIES["pro"]["products"][product_key]["sizes"]
+    buttons = [
+        [InlineKeyboardButton(size, callback_data=f"size|{product_key}|{size}")]
+        for size in sizes
+    ]
+    buttons.append([InlineKeyboardButton("⬅️ بازگشت", callback_data="cat|pro")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def victory_items_keyboard():
+    items = CATEGORIES["victory"]["items"]
+    buttons = [
+        [InlineKeyboardButton(item["title"], callback_data=f"victory|{key}")]
+        for key, item in items.items()
+    ]
+    buttons.append([InlineKeyboardButton("⬅️ بازگشت", callback_data="back|main")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def album_sizes_keyboard():
+    sizes = CATEGORIES["album"]["sizes"]
+    buttons = [
+        [InlineKeyboardButton(size, callback_data=f"album|{size}")]
+        for size in sizes
+    ]
+    buttons.append([InlineKeyboardButton("⬅️ بازگشت", callback_data="back|main")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -50,38 +85,127 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "سلام! 🌸\n"
         "به ربات سفارش آلبوم و عکاسی عروس خوش اومدی.\n\n"
-        "برای دیدن پکیج‌ها و ثبت سفارش روی /packages بزن.\n"
-        "برای دیدن سفارش‌های ثبت‌شده‌ات روی /myorders بزن."
+        "برای دیدن پکیج‌ها و ثبت سفارش روی /packages بزن."
     )
     await update.message.reply_text(text)
 
 
 async def show_packages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "یکی از پکیج‌های زیر رو انتخاب کن تا جزئیاتش رو ببینی:",
-        reply_markup=packages_keyboard(),
+        "یکی از دسته‌های زیر رو انتخاب کن:",
+        reply_markup=main_categories_keyboard(),
     )
 
 
-async def package_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- مسیریابی دکمه‌ها (Callback Query) ----------
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    package_id = query.data.replace("pkg_", "")
-    package = get_package_by_id(package_id)
+    data = query.data
 
-    if not package:
-        await query.edit_message_text("این پکیج پیدا نشد، لطفاً دوباره امتحان کن.")
+    # بازگشت به منوی اصلی
+    if data == "back|main":
+        await query.edit_message_text(
+            "یکی از دسته‌های زیر رو انتخاب کن:",
+            reply_markup=main_categories_keyboard(),
+        )
         return
 
-    context.user_data["selected_package"] = package
+    parts = data.split("|")
+    action = parts[0]
 
-    text = (
-        f"📦 *{package['title']}*\n"
-        f"💰 قیمت: {package['price']}\n\n"
-        f"{package['description']}\n\n"
-        "اگه مایل به ثبت سفارش این پکیج هستی، دستور /order رو بزن."
-    )
-    await query.edit_message_text(text, parse_mode="Markdown")
+    # ---- انتخاب دسته اصلی ----
+    if action == "cat":
+        category_key = parts[1]
+
+        if category_key == "pro":
+            await query.edit_message_text(
+                "یکی از این آلبوم‌ها رو انتخاب کن:",
+                reply_markup=pro_products_keyboard(),
+            )
+        elif category_key == "victory":
+            await query.edit_message_text(
+                "یکی از محصولات Victory رو انتخاب کن:",
+                reply_markup=victory_items_keyboard(),
+            )
+        elif category_key == "album":
+            await query.edit_message_text(
+                "سایز آلبوم مورد نظرت رو انتخاب کن:",
+                reply_markup=album_sizes_keyboard(),
+            )
+        return
+
+    # ---- انتخاب محصول در دسته PRO -> نمایش سایزها ----
+    if action == "prod":
+        product_key = parts[1]
+        product = CATEGORIES["pro"]["products"][product_key]
+        await query.edit_message_text(
+            f"سایز مورد نظر برای «{product['title']}» رو انتخاب کن:",
+            reply_markup=pro_sizes_keyboard(product_key),
+        )
+        return
+
+    # ---- انتخاب نهایی سایز در PRO ----
+    if action == "size":
+        product_key, size = parts[1], parts[2]
+        product = CATEGORIES["pro"]["products"][product_key]
+        price = product["sizes"][size]
+
+        package = {
+            "id": f"pro_{product_key}_{size}",
+            "title": f"{product['title']} ({size})",
+            "price": price,
+        }
+        context.user_data["selected_package"] = package
+
+        text = (
+            f"📦 *{package['title']}*\n"
+            f"💰 قیمت: {package['price']}\n\n"
+            "اگه مایل به ثبت سفارش این پکیج هستی، دستور /order رو بزن."
+        )
+        await query.edit_message_text(text, parse_mode="Markdown")
+        return
+
+    # ---- انتخاب نهایی در Victory ----
+    if action == "victory":
+        item_key = parts[1]
+        item = CATEGORIES["victory"]["items"][item_key]
+
+        package = {
+            "id": f"victory_{item_key}",
+            "title": item["title"],
+            "price": item["price"],
+        }
+        context.user_data["selected_package"] = package
+
+        text = (
+            f"📦 *{package['title']}*\n"
+            f"💰 قیمت: {package['price']}\n\n"
+            "اگه مایل به ثبت سفارش این پکیج هستی، دستور /order رو بزن."
+        )
+        await query.edit_message_text(text, parse_mode="Markdown")
+        return
+
+    # ---- انتخاب نهایی سایز آلبوم ----
+    if action == "album":
+        size = parts[1]
+        price = CATEGORIES["album"]["sizes"][size]
+
+        package = {
+            "id": f"album_{size}",
+            "title": f"آلبوم سایز {size}",
+            "price": price,
+        }
+        context.user_data["selected_package"] = package
+
+        text = (
+            f"📦 *{package['title']}*\n"
+            f"💰 قیمت: {package['price']}\n\n"
+            "اگه مایل به ثبت سفارش این پکیج هستی، دستور /order رو بزن."
+        )
+        await query.edit_message_text(text, parse_mode="Markdown")
+        return
 
 
 # ---------- مکالمه ثبت سفارش ----------
@@ -204,7 +328,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("packages", show_packages))
-    app.add_handler(CallbackQueryHandler(package_selected, pattern=r"^pkg_"))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(conv_handler)
     app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
